@@ -126,8 +126,6 @@ if __name__ == "__main__":
     
     
     
-# =========================
-
 from flask import Flask, request, jsonify
 import requests
 import os
@@ -135,30 +133,41 @@ import google.generativeai as genai
 
 app = Flask(__name__)
 
-# =========================
-# GEMINI CONFIG
-# =========================
-genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-gemini_model = genai.GenerativeModel("models/gemini-2.5-flash")
+# ======================================================
+# GEMINI CONFIGURATION (FROM ENVIRONMENT VARIABLE)
+# ======================================================
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# =========================
+if not GEMINI_API_KEY:
+    raise RuntimeError("GEMINI_API_KEY not set in environment variables")
+
+genai.configure(api_key=GEMINI_API_KEY)
+
+# Use a fast & stable Gemini model
+MODEL_NAME = "models/gemini-2.0-flash"
+model = genai.GenerativeModel(MODEL_NAME)
+
+# ======================================================
 # WEATHER CODES
-# =========================
+# ======================================================
 WEATHER_CODES = {
     0: "Clear sky",
     1: "Mainly clear",
     2: "Partly cloudy",
     3: "Overcast",
     45: "Fog",
-    61: "Rain",
+    48: "Depositing rime fog",
+    51: "Light drizzle",
+    61: "Slight rain",
     63: "Moderate rain",
     65: "Heavy rain",
+    71: "Slight snowfall",
     95: "Thunderstorm"
 }
 
-# =========================
-# WEATHER HELPERS
-# =========================
+# ======================================================
+# WEATHER FUNCTIONS
+# ======================================================
 def get_coordinates(city):
     url = f"https://nominatim.openstreetmap.org/search?city={city}&format=json&limit=1"
     headers = {"User-Agent": "KrishiSahayakBot"}
@@ -167,92 +176,113 @@ def get_coordinates(city):
         return float(res[0]["lat"]), float(res[0]["lon"])
     return None, None
 
+
 def get_weather(lat, lon):
     url = (
         f"https://api.open-meteo.com/v1/forecast?"
         f"latitude={lat}&longitude={lon}&current_weather=true&"
-        f"daily=temperature_2m_max,temperature_2m_min,precipitation_sum&timezone=auto"
+        f"daily=temperature_2m_max,temperature_2m_min,precipitation_sum,"
+        f"windspeed_10m_max&timezone=auto"
     )
-    return requests.get(url).json()
+    response = requests.get(url)
+    if response.status_code == 200:
+        return response.json()
+    return None
 
-# =========================
-# GEMINI RESPONSE (SHORT)
-# =========================
+# ======================================================
+# GEMINI QUERY FUNCTION (CONCISE & FORMATTED)
+# ======================================================
 def ask_gemini(user_query):
     prompt = f"""
-You are KrishiSahayak, an agriculture chatbot.
+You are KrishiSahayak, an agriculture assistant chatbot.
 
 Rules:
-- Max 4 short bullet points
+- Maximum 3 short bullet points
 - Simple language
+- No long paragraphs
 - Use emojis
-- No long explanation
+- Keep response concise
 
 User question:
 {user_query}
 
-Reply format:
+Response format:
 🌱 Advice:
-• point 1
-• point 2
-• point 3
+• Point 1
+• Point 2
+• Point 3
 """
 
-    response = gemini_model.generate_content(
-        prompt,
-        generation_config={
-            "temperature": 0.3,
-            "max_output_tokens": 120
-        }
-    )
+    try:
+        response = model.generate_content(
+            prompt,
+            generation_config={
+                "temperature": 0.3,
+                "max_output_tokens": 120
+            }
+        )
+        return response.text.strip() if hasattr(response, "text") else \
+            "❌ Sorry, I couldn’t generate an answer right now."
+    except Exception as e:
+        print("Gemini error:", e)
+        return "❌ AI service is temporarily unavailable."
 
-    return response.text.strip() if hasattr(response, "text") else "❌ Unable to respond now."
-
-# =========================
+# ======================================================
 # DIALOGFLOW WEBHOOK
-# =========================
+# ======================================================
 @app.route("/webhook", methods=["POST"])
 def webhook():
     req = request.get_json()
 
-    intent = req["queryResult"]["intent"]["displayName"]
-    user_text = req["queryResult"]["queryText"]
-    city = req["queryResult"]["parameters"].get("geo-city")
+    query_result = req.get("queryResult", {})
+    intent = query_result.get("intent", {}).get("displayName", "")
+    parameters = query_result.get("parameters", {})
+    user_query = query_result.get("queryText", "")
 
-    # -------- WEATHER INTENT --------
+    # ---------------- WEATHER INTENT ----------------
+    city = parameters.get("geo-city")
     if intent.lower() == "get weather" and city:
         lat, lon = get_coordinates(city)
         if not lat:
             return jsonify({"fulfillmentText": f"❌ City not found: {city}"})
 
-        data = get_weather(lat, lon)
-        current = data["current_weather"]
+        weather_data = get_weather(lat, lon)
+        if not weather_data:
+            return jsonify({"fulfillmentText": "❌ Unable to fetch weather data right now."})
 
+        current = weather_data["current_weather"]
+        temp = current["temperature"]
+        wind = current["windspeed"]
         condition = WEATHER_CODES.get(current["weathercode"], "Unknown")
 
-        forecast = "\n".join([
-            f"• {data['daily']['time'][i]}: 🌡️ {data['daily']['temperature_2m_min'][i]}–{data['daily']['temperature_2m_max'][i]}°C, 🌧️ {data['daily']['precipitation_sum'][i]} mm"
-            for i in range(min(3, len(data["daily"]["time"])))
-        ])
+        daily = weather_data["daily"]
+        forecast_lines = []
+        for i in range(min(3, len(daily["time"]))):
+            forecast_lines.append(
+                f"📅 {daily['time'][i]}: 🌡️ {daily['temperature_2m_min'][i]}°C - "
+                f"{daily['temperature_2m_max'][i]}°C, 🌧️ {daily['precipitation_sum'][i]} mm, "
+                f"💨 {daily['windspeed_10m_max'][i]} km/h"
+            )
 
-        weather_text = f"""
-🌍 Weather Update: {city}
+        response_text = f"""
+🌦️ Weather Update – {city}
 
-🌡️ Temp: {current['temperature']}°C
+🌡️ Temperature: {temp}°C
 ☁️ Condition: {condition}
-💨 Wind: {current['windspeed']} km/h
+💨 Wind Speed: {wind} km/h
 
-📅 Next Days:
-{forecast}
-"""
-        return jsonify({"fulfillmentText": weather_text.strip()})
+📅 Forecast:
+""" + "\n".join(forecast_lines)
 
-    # -------- GEMINI FALLBACK --------
-    return jsonify({"fulfillmentText": ask_gemini(user_text)})
+        return jsonify({"fulfillmentText": response_text.strip()})
 
-# =========================
+    # ---------------- ALL OTHER QUERIES → GEMINI ----------------
+    gemini_response = ask_gemini(user_query)
+    return jsonify({"fulfillmentText": gemini_response})
+
+# ======================================================
 # RUN (LOCAL / RENDER)
-# =========================
+# ======================================================
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
