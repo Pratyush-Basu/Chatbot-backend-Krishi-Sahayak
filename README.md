@@ -64,6 +64,14 @@ Text chatbot integration
 
 Scalable AI assistant for agriculture platforms
 
+## 💬 Chatbot Example
+
+Below is an example interaction with the **Krishi Sahayak AI Chatbot**, showing how it answers farmer queries using LLM-powered reasoning.
+
+### Example: Crop Disease Query
+![Chatbot Example](https://github.com/Pratyush-Basu/Chatbot-backend-Krishi-Sahayak/blob/7d5be40998159a45cce41150ba1abda02bc8abd5/Screenshot%20(744).png)
+
+
 # Future Enhancements
 
 Crop disease image analysis
